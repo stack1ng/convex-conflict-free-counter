@@ -1,0 +1,33 @@
+{
+  /* This TypeScript project config describes the environment that
+   * Convex functions run in and is used to typecheck them.
+   * You can modify it, but some settings are required to use Convex.
+   */
+  "compilerOptions": {
+    /* These settings are not required by Convex and can be modified. */
+    "allowJs": true,
+    "strict": true,
+    "skipLibCheck": true,
+
+    /* These compiler options are required by Convex */
+    "target": "ESNext",
+    "lib": ["ES2021", "dom", "DOM.Iterable"],
+    "forceConsistentCasingInFileNames": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "isolatedModules": true,
+    "noEmit": true,
+
+    /* The component package is symlinked from the repo root (file:..), so
+     * its type imports of "convex" would otherwise resolve to the root's
+     * copy while ours resolve to demo/node_modules — two identical but
+     * distinct type identities. Force a single copy for the whole program. */
+    "baseUrl": ".",
+    "paths": {
+      "convex": ["../node_modules/convex"],
+      "convex/*": ["../node_modules/convex/*"]
+    }
+  },
+  "include": ["./**/*"],
+  "exclude": ["./_generated"]
+}

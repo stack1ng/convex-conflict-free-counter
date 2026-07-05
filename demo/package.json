@@ -1,0 +1,26 @@
+{
+  "name": "conflict-free-counter-demo",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "dev": "next dev",
+    "dev:backend": "convex dev",
+    "prebuild": "npm --prefix .. install && npm --prefix .. run build",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit && tsc -p convex"
+  },
+  "dependencies": {
+    "convex": "^1.42.0",
+    "convex-conflict-free-counter": "file:..",
+    "next": "^15.5.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.9.0"
+  }
+}
