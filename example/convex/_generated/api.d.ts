@@ -47,5 +47,5 @@ export declare const internal: FilterApi<
 >;
 
 export declare const components: {
-  ecLogCounter: import("convex-ec-log-counter/_generated/component.js").ComponentApi<"ecLogCounter">;
+  conflictFreeCounter: import("convex-conflict-free-counter/_generated/component.js").ComponentApi<"conflictFreeCounter">;
 };

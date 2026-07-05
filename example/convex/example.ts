@@ -1,9 +1,9 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { components } from "./_generated/api";
-import { ECLogCounter } from "convex-ec-log-counter";
+import { ConflictFreeCounter } from "convex-conflict-free-counter";
 
-const counter = new ECLogCounter(components.ecLogCounter, {
+const counter = new ConflictFreeCounter(components.conflictFreeCounter, {
   compactionDelay: 1000 * 15,
 });
 

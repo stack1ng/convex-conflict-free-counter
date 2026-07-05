@@ -1,10 +1,10 @@
 {
-  "name": "convex-ec-log-counter",
+  "name": "convex-conflict-free-counter",
   "description": "An eventually-consistent, contention-free counter component for Convex.",
-  "repository": "github:stack1ng/convex-ec-log-counter",
-  "homepage": "https://github.com/stack1ng/convex-ec-log-counter#readme",
+  "repository": "github:stack1ng/convex-conflict-free-counter",
+  "homepage": "https://github.com/stack1ng/convex-conflict-free-counter#readme",
   "bugs": {
-    "url": "https://github.com/stack1ng/convex-ec-log-counter/issues"
+    "url": "https://github.com/stack1ng/convex-conflict-free-counter/issues"
   },
   "version": "0.1.0",
   "license": "Apache-2.0",

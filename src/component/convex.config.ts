@@ -1,5 +1,5 @@
 import { defineComponent } from "convex/server";
 
-const component = defineComponent("ecLogCounter");
+const component = defineComponent("conflictFreeCounter");
 
 export default component;

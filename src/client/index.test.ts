@@ -2,7 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { convexTest } from "convex-test";
-import { ECLogCounter, type RunMutationCtx } from "./index.js";
+import { ConflictFreeCounter, type RunMutationCtx } from "./index.js";
 import {
   components,
   componentModules,
@@ -12,7 +12,7 @@ import {
 
 function setup() {
   const t = convexTest(undefined, modules);
-  t.registerComponent("ecLogCounter", componentSchema, componentModules);
+  t.registerComponent("conflictFreeCounter", componentSchema, componentModules);
   return t;
 }
 
@@ -24,7 +24,7 @@ async function drain(t: ReturnType<typeof setup>) {
   await finish(() => vi.advanceTimersToNextTimer(), 10_000);
 }
 
-describe("ECLogCounter against a real component", () => {
+describe("ConflictFreeCounter against a real component", () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });
@@ -34,7 +34,7 @@ describe("ECLogCounter against a real component", () => {
 
   test("add / count round trip, delta defaults to 1", async () => {
     const t = setup();
-    const counter = new ECLogCounter(components.ecLogCounter);
+    const counter = new ConflictFreeCounter(components.conflictFreeCounter);
     await t.run(async (ctx) => {
       await counter.add(ctx, "k");
       await counter.add(ctx, "k", 4);
@@ -45,7 +45,7 @@ describe("ECLogCounter against a real component", () => {
 
   test("count stays correct across compaction", async () => {
     const t = setup();
-    const counter = new ECLogCounter(components.ecLogCounter);
+    const counter = new ConflictFreeCounter(components.conflictFreeCounter);
     await t.run(async (ctx) => {
       await counter.addMany(ctx, [
         { key: "k", delta: 2 },
@@ -66,8 +66,8 @@ describe("ECLogCounter against a real component", () => {
 
   test("count forwards logScanLimit and defaultLogScanLimit", async () => {
     const t = setup();
-    const counter = new ECLogCounter(components.ecLogCounter);
-    const snapshotOnly = new ECLogCounter(components.ecLogCounter, {
+    const counter = new ConflictFreeCounter(components.conflictFreeCounter);
+    const snapshotOnly = new ConflictFreeCounter(components.conflictFreeCounter, {
       defaultLogScanLimit: 0,
     });
     await t.run(async (ctx) => {
@@ -99,7 +99,7 @@ describe("ECLogCounter against a real component", () => {
 
   test("reset zeroes a counter", async () => {
     const t = setup();
-    const counter = new ECLogCounter(components.ecLogCounter);
+    const counter = new ConflictFreeCounter(components.conflictFreeCounter);
     await t.run(async (ctx) => {
       await counter.add(ctx, "k", 12);
     });
@@ -116,7 +116,7 @@ describe("ECLogCounter against a real component", () => {
 
   test("buffered adds coalesce and flush once", async () => {
     const t = setup();
-    const counter = new ECLogCounter(components.ecLogCounter);
+    const counter = new ConflictFreeCounter(components.conflictFreeCounter);
     await t.run(async (ctx) => {
       const buffered = counter.bindDeltasBuffer(ctx);
       await counter.addBuffered(buffered, "a");
@@ -146,14 +146,14 @@ describe("ECLogCounter against a real component", () => {
       ) => Promise<Array<{ key: string }>>;
     };
     const logs = await tWithComponents.runInComponent(
-      "ecLogCounter",
+      "conflictFreeCounter",
       async (ctx) => ctx.db.query("counter_logs").collect(),
     );
     expect(logs.some((l) => l.key === "zero")).toBe(false);
   });
 });
 
-describe("ECLogCounter unit behavior (fake ctx)", () => {
+describe("ConflictFreeCounter unit behavior (fake ctx)", () => {
   // The real runMutation is a variadic generic; a loose mock plus a cast
   // keeps the tests focused on call counts and payloads.
   function fakeCtx() {
@@ -165,7 +165,7 @@ describe("ECLogCounter unit behavior (fake ctx)", () => {
   }
 
   test("addMany chunks batches larger than 8,000 deltas", async () => {
-    const counter = new ECLogCounter(components.ecLogCounter);
+    const counter = new ConflictFreeCounter(components.conflictFreeCounter);
     const { ctx, runMutation } = fakeCtx();
     const deltas = Array.from({ length: 8_001 }, (_, i) => ({
       key: `k${i % 3}`,
@@ -184,14 +184,14 @@ describe("ECLogCounter unit behavior (fake ctx)", () => {
   });
 
   test("addMany with an empty array never calls the component", async () => {
-    const counter = new ECLogCounter(components.ecLogCounter);
+    const counter = new ConflictFreeCounter(components.conflictFreeCounter);
     const { ctx, runMutation } = fakeCtx();
     await counter.addMany(ctx, []);
     expect(runMutation).not.toHaveBeenCalled();
   });
 
   test("client-side rejection of non-finite deltas", async () => {
-    const counter = new ECLogCounter(components.ecLogCounter);
+    const counter = new ConflictFreeCounter(components.conflictFreeCounter);
     const { ctx, runMutation } = fakeCtx();
     await expect(counter.add(ctx, "k", NaN)).rejects.toThrow(/finite/);
     await expect(
@@ -205,7 +205,7 @@ describe("ECLogCounter unit behavior (fake ctx)", () => {
   });
 
   test("addBuffered without a bound buffer throws a helpful error", async () => {
-    const counter = new ECLogCounter(components.ecLogCounter);
+    const counter = new ConflictFreeCounter(components.conflictFreeCounter);
     // Deliberately bypass the type system, as a misconfigured consumer would.
     const ctx = fakeCtx().ctx as never;
     await expect(counter.addBuffered(ctx, "k")).rejects.toThrow(
@@ -217,7 +217,7 @@ describe("ECLogCounter unit behavior (fake ctx)", () => {
   });
 
   test("a failed flush keeps unwritten deltas so a retry writes them", async () => {
-    const counter = new ECLogCounter(components.ecLogCounter);
+    const counter = new ConflictFreeCounter(components.conflictFreeCounter);
     const runMutation = vi
       .fn(async (..._args: unknown[]) => null)
       .mockRejectedValueOnce(new Error("transient"));
@@ -238,7 +238,7 @@ describe("ECLogCounter unit behavior (fake ctx)", () => {
   });
 
   test("flushDeltas clears the buffer so a second flush writes nothing", async () => {
-    const counter = new ECLogCounter(components.ecLogCounter);
+    const counter = new ConflictFreeCounter(components.conflictFreeCounter);
     const { ctx, runMutation } = fakeCtx();
     const buffered = counter.bindDeltasBuffer(ctx);
     await counter.addBuffered(buffered, "k", 2);
@@ -249,7 +249,7 @@ describe("ECLogCounter unit behavior (fake ctx)", () => {
   });
 
   test("custom compaction options are forwarded to the component", async () => {
-    const counter = new ECLogCounter(components.ecLogCounter, {
+    const counter = new ConflictFreeCounter(components.conflictFreeCounter, {
       compactionDelay: 1_000,
       compactionLeaseDuration: 5_000,
     });

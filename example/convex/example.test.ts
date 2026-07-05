@@ -5,14 +5,14 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { convexTest } from "convex-test";
-import ecLogCounter from "convex-ec-log-counter/test";
+import conflictFreeCounter from "convex-conflict-free-counter/test";
 import schema from "./schema";
 import { modules } from "./setup.test";
 import { api } from "./_generated/api";
 
 function setup() {
   const t = convexTest(schema, modules);
-  ecLogCounter.register(t);
+  conflictFreeCounter.register(t);
   return t;
 }
 

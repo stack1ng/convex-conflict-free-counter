@@ -15,7 +15,7 @@ export type RunQueryCtx = {
   runQuery: GenericQueryCtx<GenericDataModel>["runQuery"];
 };
 
-export interface ECLogCounterOptions {
+export interface ConflictFreeCounterOptions {
   /**
    * How long (in milliseconds) the counter waits after a write before
    * compacting the log into the snapshot. Longer delays batch more log
@@ -54,13 +54,13 @@ function assertFiniteDelta(delta: number) {
     throw new Error(`counter delta must be a finite number, got ${delta}`);
 }
 
-const bufferedCounterDeltasSymbol = Symbol("ec-log-counter-buffered-deltas");
+const bufferedCounterDeltasSymbol = Symbol("conflict-free-counter-buffered-deltas");
 
 type BufferedDeltas = Map<string, number>;
 
 /**
  * A mutation ctx that has been bound with a delta buffer via
- * {@link ECLogCounter.bindDeltasBuffer}.
+ * {@link ConflictFreeCounter.bindDeltasBuffer}.
  */
 export type BufferedCounterCtx = RunMutationCtx & {
   [bufferedCounterDeltasSymbol]: BufferedDeltas;
@@ -75,13 +75,13 @@ export type BufferedCounterCtx = RunMutationCtx & {
  * along with a `fullyConsistent` flag telling you whether the returned count
  * reflects every write.
  */
-export class ECLogCounter {
-  private options: Required<Omit<ECLogCounterOptions, "defaultLogScanLimit">> &
-    Pick<ECLogCounterOptions, "defaultLogScanLimit">;
+export class ConflictFreeCounter {
+  private options: Required<Omit<ConflictFreeCounterOptions, "defaultLogScanLimit">> &
+    Pick<ConflictFreeCounterOptions, "defaultLogScanLimit">;
 
   constructor(
     private component: ComponentApi,
-    options: ECLogCounterOptions = {},
+    options: ConflictFreeCounterOptions = {},
   ) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
   }

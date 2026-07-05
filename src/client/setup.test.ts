@@ -10,7 +10,7 @@ export const componentModules = import.meta.glob("../component/**/*.ts");
 export const modules = import.meta.glob("./**/*.*s");
 
 export const components = componentsGeneric() as unknown as {
-  ecLogCounter: ComponentApi;
+  conflictFreeCounter: ComponentApi;
 };
 
 test("setup", () => {});

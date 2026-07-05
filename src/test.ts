@@ -15,7 +15,7 @@ const modules = import.meta.glob([
  */
 export function register(
   t: TestConvex<SchemaDefinition<GenericSchema, boolean>>,
-  name: string = "ecLogCounter",
+  name: string = "conflictFreeCounter",
 ) {
   t.registerComponent(name, schema, modules);
 }

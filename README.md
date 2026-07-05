@@ -1,6 +1,6 @@
-# Convex EC Log Counter Component
+# Convex Conflict-Free Counter Component
 
-[![npm version](https://badge.fury.io/js/convex-ec-log-counter.svg)](https://badge.fury.io/js/convex-ec-log-counter)
+[![npm version](https://badge.fury.io/js/convex-conflict-free-counter.svg)](https://badge.fury.io/js/convex-conflict-free-counter)
 
 <!-- START: Include on https://convex.dev/components -->
 
@@ -34,7 +34,7 @@ Compared to
   always converges.
 
 Found a bug? Feature request?
-[File it here](https://github.com/stack1ng/convex-ec-log-counter/issues).
+[File it here](https://github.com/stack1ng/convex-conflict-free-counter/issues).
 
 ## Pre-requisite: Convex
 
@@ -50,7 +50,7 @@ Run `npm create convex` or follow any of the
 Install the component package:
 
 ```sh
-npm install convex-ec-log-counter
+npm install convex-conflict-free-counter
 ```
 
 Create a `convex.config.ts` file in your app's `convex/` folder and install
@@ -59,10 +59,10 @@ the component by calling `use`:
 ```ts
 // convex/convex.config.ts
 import { defineApp } from "convex/server";
-import ecLogCounter from "convex-ec-log-counter/convex.config";
+import conflictFreeCounter from "convex-conflict-free-counter/convex.config";
 
 const app = defineApp();
-app.use(ecLogCounter);
+app.use(conflictFreeCounter);
 
 export default app;
 ```
@@ -72,10 +72,10 @@ one instance):
 
 ```ts
 // convex/counter.ts
-import { ECLogCounter } from "convex-ec-log-counter";
+import { ConflictFreeCounter } from "convex-conflict-free-counter";
 import { components } from "./_generated/api";
 
-export const counter = new ECLogCounter(components.ecLogCounter);
+export const counter = new ConflictFreeCounter(components.conflictFreeCounter);
 ```
 
 ## Updating counters
@@ -148,7 +148,7 @@ should only update once per compaction rather than on every increment.
 ## Configuration
 
 ```ts
-export const counter = new ECLogCounter(components.ecLogCounter, {
+export const counter = new ConflictFreeCounter(components.conflictFreeCounter, {
   // Wait this long after a write before compacting (default: 15s).
   // Longer = fewer, larger compactions. Shorter = reads converge faster.
   compactionDelay: 15_000,
@@ -195,12 +195,12 @@ The package ships a `/test` entry point for use with
 
 ```ts
 import { convexTest } from "convex-test";
-import ecLogCounter from "convex-ec-log-counter/test";
+import conflictFreeCounter from "convex-conflict-free-counter/test";
 import schema from "./schema";
 import { modules } from "./test.setup";
 
 const t = convexTest(schema, modules);
-ecLogCounter.register(t); // pass a name if you installed it under one
+conflictFreeCounter.register(t); // pass a name if you installed it under one
 
 // Compaction runs through the scheduler; drive it in tests with fake timers:
 // vi.useFakeTimers(); ...; await t.finishAllScheduledFunctions(vi.runAllTimers);
@@ -216,5 +216,5 @@ npm run dev
 ```
 
 See
-[example/convex/example.ts](https://github.com/stack1ng/convex-ec-log-counter/blob/main/example/convex/example.ts)
+[example/convex/example.ts](https://github.com/stack1ng/convex-conflict-free-counter/blob/main/example/convex/example.ts)
 for a complete usage example.

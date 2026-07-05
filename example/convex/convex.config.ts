@@ -1,7 +1,7 @@
 import { defineApp } from "convex/server";
-import ecLogCounter from "convex-ec-log-counter/convex.config";
+import conflictFreeCounter from "convex-conflict-free-counter/convex.config";
 
 const app = defineApp();
-app.use(ecLogCounter);
+app.use(conflictFreeCounter);
 
 export default app;
