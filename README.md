@@ -1,6 +1,7 @@
 # Convex Conflict-Free Counter Component
 
 [![npm version](https://badge.fury.io/js/convex-conflict-free-counter.svg)](https://badge.fury.io/js/convex-conflict-free-counter)
+[![Convex Component](https://www.convex.dev/components/badge/convex-conflict-free-counter)](https://www.convex.dev/components/convex-conflict-free-counter)
 
 <!-- START: Include on https://convex.dev/components -->
 
