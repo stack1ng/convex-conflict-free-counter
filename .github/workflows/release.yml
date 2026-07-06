@@ -1,8 +1,9 @@
 name: Release to npm
 
-# Publishes the package to npm when a version tag (v*) is pushed. Requires an
-# NPM_TOKEN repository secret (an npm automation token with publish rights on
-# this package). See PUBLISHING.md.
+# Publishes to npm when a version tag (v*) is pushed. Authentication is via
+# npm Trusted Publishing (OIDC) — there is NO npm token, in CI or anywhere
+# else. The GitHub "Production" environment (restricted to v* tags) gates the
+# publish. See PUBLISHING.md.
 
 on:
   push:
@@ -16,9 +17,10 @@ jobs:
     name: Check and publish
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    environment: Production
     permissions:
       contents: read
-      id-token: write # npm --provenance
+      id-token: write # OIDC for npm Trusted Publishing (and provenance)
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -32,6 +34,10 @@ jobs:
           node-version: "24.x"
           cache: "npm"
           registry-url: "https://registry.npmjs.org"
+
+      # Trusted Publishing (OIDC) requires npm >= 11.5.1.
+      - name: Update npm
+        run: npm install -g npm@latest
 
       - name: Install
         run: npm ci
@@ -50,7 +56,22 @@ jobs:
           npm run typecheck
           npm run lint
 
+      # A mistagged push must never publish the wrong version.
+      - name: Verify tag matches package.json version
+        run: |
+          PKG_VERSION="v$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_NAME" != "$PKG_VERSION" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $PKG_VERSION" >&2
+            exit 1
+          fi
+
       - name: Publish
-        run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # No token: npm authenticates via OIDC (Trusted Publishing) and
+        # attaches build provenance automatically. Prerelease versions
+        # (e.g. 0.2.0-alpha.0) publish to the "alpha" dist-tag, not "latest".
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          case "$VERSION" in
+            *-*) npm publish --access public --tag alpha ;;
+            *) npm publish --access public ;;
+          esac

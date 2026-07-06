@@ -17,9 +17,7 @@ npm run lint
 npm run test
 ```
 
-## Deploying
-
-### Building a one-off package
+## Building a one-off package
 
 ```sh
 npm run clean
@@ -27,17 +25,14 @@ npm ci
 npm pack
 ```
 
-### Deploying a new version
+## Releasing
+
+Releases are published **only** by CI when a `v*` tag is pushed, via npm
+Trusted Publishing (no token). To cut one:
 
 ```sh
-npm run release
+npm run release      # patch bump + push tag  → CI publishes
+npm run alpha        # prerelease bump + push tag → CI publishes to "alpha"
 ```
 
-or for alpha release:
-
-```sh
-npm run alpha
-```
-
-Releases can also be published from CI by pushing a version tag — see
-[PUBLISHING.md](PUBLISHING.md).
+See [PUBLISHING.md](PUBLISHING.md) for the full flow.

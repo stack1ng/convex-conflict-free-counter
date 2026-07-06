@@ -1,74 +1,61 @@
 # Publishing
 
-## Prerequisite
+Publishing happens **only** through CI, on a version tag, using npm
+[Trusted Publishing](https://docs.npmjs.com/trusted-publishers) (OIDC). There
+is no npm token anywhere — not in CI secrets, not on a maintainer's machine.
+Pushing a `v*` tag is the one and only way a version reaches npm.
 
-`npm run build:codegen`, `npm run release`, `npm run alpha`, and `npm version`
-(via `preversion`) all run `npx convex codegen`, which needs a configured
-Convex dev deployment. On a fresh clone, set one up once with:
+## Cutting a release
+
+1. Bump the version and push the tag:
+
+   ```sh
+   npm run release       # patch bump: updates CHANGELOG, commits, tags
+   # or  npm run alpha    # prerelease bump on the "alpha" dist-tag
+   # or, for a minor/major bump:
+   npm version minor && git push --follow-tags
+   ```
+
+   `npm version` runs the checks (`preversion`) and the CHANGELOG edit
+   (`version`) locally, then creates the commit and tag. `npm run release` /
+   `npm run alpha` also `git push --follow-tags` for you. None of these
+   publish anything themselves.
+
+2. The pushed `v*` tag triggers the
+   [release workflow](.github/workflows/release.yml). Running in the
+   `Production` environment, it re-runs the tests, typecheck, and lint,
+   verifies the tag matches `package.json`, and runs `npm publish` —
+   authenticating via OIDC with no token. npm attaches build provenance
+   automatically. Prerelease versions publish to the `alpha` dist-tag.
+
+Watch the run under the repo's Actions tab; the published version appears on
+npm once it goes green.
+
+## One-time setup (already configured)
+
+- **npm** → package Settings → **Trusted Publisher**: GitHub repository
+  `stack1ng/convex-conflict-free-counter`, workflow `release.yml`,
+  environment `Production`.
+- **GitHub** → repo → Settings → Environments → **Production**: deployment
+  tag policy restricted to `v*`, so only tag releases can reach the trusted
+  publisher.
+
+There is intentionally **no `NPM_TOKEN` secret**. If one is ever added,
+remove it — the OIDC flow does not use it, and a token is a credential worth
+not having.
+
+## Prerequisite for bumping locally
+
+`npm version` (via `preversion`) runs `npx convex codegen`, which needs a
+configured Convex dev deployment. On a fresh clone, run once:
 
 ```sh
 npx convex dev --once   # an anonymous local deployment is fine
 ```
 
-(The CI release workflow doesn't need this — it builds with plain `tsc` from
-the committed `src/component/_generated` sources.)
-
-## First publish (manual, one time)
-
-npm requires the first publish of a new package to come from a logged-in
-user:
-
-```sh
-npm login
-npm run clean
-npm ci
-npm run build:codegen
-npm run test && npm run typecheck && npm run lint
-npm publish --access public
-git tag v0.1.0
-git push --follow-tags
-```
-
-## Subsequent releases
-
-### Option A: from your machine (Convex component convention)
-
-```sh
-npm run release   # patch bump + publish + push tags
-npm run alpha     # prerelease on the "alpha" dist-tag
-```
-
-The `preversion` script gates both on a clean build, tests, lint, and
-typecheck. For minor/major bumps:
-
-```sh
-npm version minor && npm publish --access public && git push --follow-tags
-```
-
-### Option B: from CI
-
-The [release workflow](.github/workflows/release.yml) publishes to npm (with
-provenance) whenever a `v*` tag is pushed, after re-running tests, typecheck,
-and lint.
-
-One-time setup: create an npm
-[automation token](https://docs.npmjs.com/creating-and-viewing-access-tokens)
-with publish rights and add it as the `NPM_TOKEN` repository secret:
-
-```sh
-gh secret set NPM_TOKEN
-```
-
-Then a release is just:
-
-```sh
-npm version patch  # updates CHANGELOG via the version script, creates the tag
-git push --follow-tags
-```
-
 ## Listing on the Convex components directory
 
-Once published to npm with a public repo:
+Once a version is on npm with the public repo:
 
 1. Optionally run the preflight checker:
    https://www.convex.dev/components/submit/check
