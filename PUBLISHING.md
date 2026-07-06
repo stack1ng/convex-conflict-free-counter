@@ -16,10 +16,11 @@ Pushing a `v*` tag is the one and only way a version reaches npm.
    npm version minor && git push --follow-tags
    ```
 
-   `npm version` runs the checks (`preversion`) and the CHANGELOG edit
-   (`version`) locally, then creates the commit and tag. `npm run release` /
-   `npm run alpha` also `git push --follow-tags` for you. None of these
-   publish anything themselves.
+   `npm version` runs the checks (`preversion`), then **prompts you for
+   release notes** on the terminal (one bullet per line, blank line to
+   finish) and writes them into `CHANGELOG.md`, then creates the commit and
+   tag. `npm run release` / `npm run alpha` also `git push --follow-tags` for
+   you. None of these publish anything themselves.
 
 2. The pushed `v*` tag triggers the
    [release workflow](.github/workflows/release.yml). Running in the

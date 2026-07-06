@@ -12,6 +12,7 @@ export default [
       "demo/**/*.config.{js,mjs,cjs,ts,tsx}",
       "demo/.next/**",
       "demo/next-env.d.ts",
+      "scripts/**",
       "**/_generated/",
     ],
   },

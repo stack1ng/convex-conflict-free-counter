@@ -35,7 +35,7 @@
     "preversion": "npm ci && npm run clean && npm run build && npm run test && npm run lint && npm run typecheck",
     "alpha": "npm version prerelease --preid alpha && git push --follow-tags",
     "release": "npm version patch && git push --follow-tags",
-    "version": "vim -c 'normal o' -c 'normal o## '$npm_package_version CHANGELOG.md && prettier -w CHANGELOG.md && git add CHANGELOG.md"
+    "version": "node scripts/changelog.mjs && prettier -w CHANGELOG.md && git add CHANGELOG.md"
   },
   "files": [
     "dist",
