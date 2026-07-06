@@ -31,7 +31,7 @@ body {
 }
 
 main {
-  max-width: 760px;
+  max-width: 960px;
   margin: 0 auto;
   padding: 48px 20px 80px;
   display: flex;
@@ -111,7 +111,7 @@ h1 {
 
 .counters {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 14px;
 }
 
@@ -120,6 +120,21 @@ h1 {
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 16px;
+}
+
+.counter.featured {
+  border-color: var(--accent-2);
+  background: color-mix(in srgb, var(--accent-2) 8%, var(--bg));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-2) 25%, transparent);
+}
+
+.counter.featured .label {
+  color: var(--accent-2);
+  font-weight: 600;
+}
+
+.counter.featured .value {
+  color: var(--accent-2);
 }
 
 .counter .label {

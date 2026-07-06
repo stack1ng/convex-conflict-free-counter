@@ -2,11 +2,13 @@ import { v } from "convex/values";
 import { internalMutation, mutation, query } from "./_generated/server";
 import { api, components } from "./_generated/api";
 import { ConflictFreeCounter } from "convex-conflict-free-counter";
-import { Id } from "convex/dist/esm-types/values/value";
+import { Id } from "./_generated/dataModel";
 
-const counter = new ConflictFreeCounter(components.conflictFreeCounter);
+const conflictFreeCounter = new ConflictFreeCounter(
+  components.conflictFreeCounter,
+);
 
-function getCfKey(demo_run: Id<"demo_runs">) {
+function getCounterKey(demo_run: Id<"demo_runs">) {
   return `demo-${demo_run}`;
 }
 
@@ -24,6 +26,7 @@ export const values = query({
   returns: v.object({
     naive: v.number(),
     conflictFree: v.number(),
+    sharded: v.number(),
     fullyConsistent: v.boolean(),
   }),
   handler: async (ctx, { demo_run }) => {
@@ -31,10 +34,15 @@ export const values = query({
       .query("naive_counters")
       .withIndex("by_demo_run", (q) => q.eq("demo_run", demo_run))
       .unique();
-    const cf = await counter.count(ctx, getCfKey(demo_run));
+    const key = getCounterKey(demo_run);
+    const cf = await conflictFreeCounter.count(ctx, key);
+    const sharded = await ctx.runQuery(components.shardedCounter.public.count, {
+      name: key,
+    });
     return {
       naive: naiveDoc?.value ?? 0,
       conflictFree: cf.count,
+      sharded,
       fullyConsistent: cf.fullyConsistent,
     };
   },
@@ -43,10 +51,12 @@ export const values = query({
 export const runDemoIncrements = mutation({
   args: {
     target_count: v.number(),
+    shard_count: v.number(),
   },
-  handler: async (ctx, { target_count }) => {
+  handler: async (ctx, { target_count, shard_count }) => {
     const demoRun = await ctx.db.insert("demo_runs", {
       target_count,
+      shard_count,
     });
     const counter = await ctx.db.insert("naive_counters", {
       demo_run: demoRun,
@@ -57,6 +67,9 @@ export const runDemoIncrements = mutation({
         counter_id: counter,
       });
       await ctx.scheduler.runAfter(0, api.counter.incrementConflictFree, {
+        demo_run: demoRun,
+      });
+      await ctx.scheduler.runAfter(0, api.counter.incrementSharded, {
         demo_run: demoRun,
       });
     }
@@ -93,7 +106,24 @@ export const incrementConflictFree = mutation({
     demo_run: v.id("demo_runs"),
   },
   handler: async (ctx, { demo_run }) => {
-    await counter.add(ctx, getCfKey(demo_run));
+    await conflictFreeCounter.add(ctx, getCounterKey(demo_run));
+  },
+});
+
+// Random-shard read-modify-write: fewer conflicts than naive, but still
+// contends when many increments hit the same shard.
+export const incrementSharded = mutation({
+  args: {
+    demo_run: v.id("demo_runs"),
+  },
+  handler: async (ctx, { demo_run }) => {
+    const run = await ctx.db.get(demo_run);
+    if (!run) throw new Error("Demo run not found");
+    await ctx.runMutation(components.shardedCounter.public.add, {
+      name: getCounterKey(demo_run),
+      count: 1,
+      shards: run.shard_count,
+    });
   },
 });
 

@@ -48,4 +48,5 @@ export declare const internal: FilterApi<
 
 export declare const components: {
   conflictFreeCounter: import("convex-conflict-free-counter/_generated/component.js").ComponentApi<"conflictFreeCounter">;
+  shardedCounter: import("@convex-dev/sharded-counter/_generated/component.js").ComponentApi<"shardedCounter">;
 };

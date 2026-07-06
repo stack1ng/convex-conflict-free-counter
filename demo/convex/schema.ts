@@ -4,6 +4,7 @@ import { v } from "convex/values";
 export default defineSchema({
   demo_runs: defineTable({
     target_count: v.number(),
+    shard_count: v.number(),
   }),
 
   // The "naive" counter: a single document whose value every increment

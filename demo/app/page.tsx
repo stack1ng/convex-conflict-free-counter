@@ -12,19 +12,25 @@ function DemoRun({ run }: { run: Doc<"demo_runs"> }) {
     <div className="run">
       <div className="run-meta">
         <span>Run {run._id.slice(-6)}</span>
-        <span className="note">target: {run.target_count}</span>
+        <span className="note">
+          target: {run.target_count} · shards: {run.shard_count}
+        </span>
       </div>
       <div className="counters">
-        <div className="counter">
-          <div className="label">Naive</div>
-          <div className="value">{values?.naive ?? "…"}</div>
-        </div>
-        <div className="counter">
+        <div className="counter featured">
           <div className="label">Conflict-free</div>
           <div className="value">{values?.conflictFree ?? "…"}</div>
           {values && !values.fullyConsistent && (
             <div className="hint">catching up…</div>
           )}
+        </div>
+        <div className="counter">
+          <div className="label">Sharded ({run.shard_count} shards)</div>
+          <div className="value">{values?.sharded ?? "…"}</div>
+        </div>
+        <div className="counter">
+          <div className="label">Naive</div>
+          <div className="value">{values?.naive ?? "…"}</div>
         </div>
       </div>
     </div>
@@ -35,12 +41,13 @@ export default function Page() {
   const runs = useQuery(api.counter.list);
   const createRun = useMutation(api.counter.runDemoIncrements);
   const [targetCount, setTargetCount] = useState(100);
+  const [shardCount, setShardCount] = useState(3);
   const [creating, setCreating] = useState(false);
 
   async function handleCreate() {
     setCreating(true);
     try {
-      await createRun({ target_count: targetCount });
+      await createRun({ target_count: targetCount, shard_count: shardCount });
     } finally {
       setCreating(false);
     }
@@ -64,10 +71,22 @@ export default function Page() {
             disabled={creating}
             onChange={(e) => setTargetCount(Number(e.target.value))}
           />
+          <label htmlFor="shard-count" className="note">
+            Shards
+          </label>
+          <input
+            id="shard-count"
+            type="number"
+            min={1}
+            max={100}
+            value={shardCount}
+            disabled={creating}
+            onChange={(e) => setShardCount(Number(e.target.value))}
+          />
           <button
             className="go"
             onClick={handleCreate}
-            disabled={creating || targetCount < 1}
+            disabled={creating || targetCount < 1 || shardCount < 1}
           >
             {creating ? "Creating…" : "Create demo run"}
           </button>

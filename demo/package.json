@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit && tsc -p convex"
   },
   "dependencies": {
+    "@convex-dev/sharded-counter": "^0.2.1",
     "convex": "^1.42.0",
     "convex-conflict-free-counter": "file:..",
     "next": "^15.5.0",
