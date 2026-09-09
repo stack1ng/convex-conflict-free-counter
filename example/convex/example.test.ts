@@ -4,6 +4,7 @@
 // component exactly the way a package consumer would via the `/test` export.
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { enableSnapshotQueries } from "../../src/component/setup.test.js";
 import { convexTest } from "convex-test";
 import conflictFreeCounter from "convex-conflict-free-counter/test";
 import schema from "./schema";
@@ -12,6 +13,7 @@ import { api } from "./_generated/api";
 
 function setup() {
   const t = convexTest(schema, modules);
+  enableSnapshotQueries();
   conflictFreeCounter.register(t);
   return t;
 }

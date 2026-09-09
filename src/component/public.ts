@@ -1,11 +1,11 @@
 import { ConvexError, v } from "convex/values";
 import { mutation, query } from "./_generated/server.js";
-import { internal } from "./_generated/api.js";
 import { clearKeyHandler } from "./compaction.js";
 import {
   computeDeltaFromLogs,
   getReadHeadroom,
   getSnapshot,
+  COMPACTION_LANES,
 } from "./shared.js";
 
 export const DEFAULT_COMPACTION_DELAY_MS = 15_000;
@@ -49,12 +49,12 @@ export const add = mutation({
     ...configArgs,
   },
   returns: v.null(),
-  handler: async (ctx, { key, delta, ...config }) => {
+  handler: async (ctx, { key, delta }) => {
     assertFiniteDelta(delta);
-    await ctx.db.insert("counter_logs", { key, delta });
-    await ctx.scheduler.runAfter(0, internal.compaction.signalNeedCompaction, {
+    await ctx.db.insert("counter_logs", {
       key,
-      ...resolveConfig(config),
+      delta,
+      lane: Math.floor(Math.random() * COMPACTION_LANES),
     });
     return null;
   },
@@ -73,27 +73,16 @@ export const addMany = mutation({
     ...configArgs,
   },
   returns: v.null(),
-  handler: async (ctx, { deltas, ...config }) => {
+  handler: async (ctx, { deltas }) => {
     if (deltas.length === 0) return null;
 
-    const uniqueKeys = new Set<string>();
     for (const entry of deltas) {
       assertFiniteDelta(entry.delta);
-      uniqueKeys.add(entry.key);
-      await ctx.db.insert("counter_logs", entry);
+      await ctx.db.insert("counter_logs", {
+        ...entry,
+        lane: Math.floor(Math.random() * COMPACTION_LANES),
+      });
     }
-
-    // A single scheduled fan-out signals every key from its own transaction,
-    // so batches with many unique keys can't exhaust this mutation's
-    // 1,000-scheduled-functions budget.
-    await ctx.scheduler.runAfter(
-      0,
-      internal.compaction.signalNeedCompactionMany,
-      {
-        keys: Array.from(uniqueKeys),
-        ...resolveConfig(config),
-      },
-    );
     return null;
   },
 });
@@ -145,8 +134,10 @@ export const read = query({
       maximumRowsRead: scanRowsLimit,
       cursor: null,
     });
+    const count = latestSnapshot.count + delta;
+    if (!Number.isFinite(count)) throw new Error(`Counter overflow for ${key}`);
     return {
-      count: latestSnapshot.count + delta,
+      count,
       // Conservative: when the number of pending logs exactly equals the
       // scan limit, every delta was counted but isDone is still false.
       fullyConsistent: paginationResult.isDone,
@@ -154,14 +145,7 @@ export const read = query({
   },
 });
 
-// Deletes all state for a key (logs, snapshot, leases), resetting its count
-// to zero. Writes committed after the reset starts survive it.
-//
-// Cost: the first deletion batch (up to ~4,000 log deletes plus their reads)
-// runs inline in the calling transaction, sharing its read/write budgets.
-// Backlogs larger than one batch finish across scheduled follow-up
-// transactions, so reads in that window see a nonzero, shrinking count.
-// Therefore, this is not gauranteed to be atomic.
+// Large resets finish in bounded continuations; writes after the cutoff survive.
 export const reset = mutation({
   args: {
     key: v.string(),

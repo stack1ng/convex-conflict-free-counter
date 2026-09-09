@@ -1,6 +1,11 @@
 /// <reference types="vite/client" />
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import workpool from "@convex-dev/workpool/test";
+import { componentsGeneric } from "convex/server";
+import { internal } from "../component/_generated/api.js";
+import { POLL_INTERVAL_MS } from "../component/shared.js";
+import { enableSnapshotQueries } from "../component/setup.test.js";
 import { convexTest } from "convex-test";
 import { ConflictFreeCounter, type RunMutationCtx } from "./index.js";
 import {
@@ -12,7 +17,9 @@ import {
 
 function setup() {
   const t = convexTest(undefined, modules);
+  enableSnapshotQueries();
   t.registerComponent("conflictFreeCounter", componentSchema, componentModules);
+  workpool.register(t, "conflictFreeCounter/workpool");
   return t;
 }
 
@@ -21,7 +28,14 @@ async function drain(t: ReturnType<typeof setup>) {
     advanceTimers: () => void,
     maxIterations?: number,
   ) => Promise<void>;
-  await finish(() => vi.advanceTimersToNextTimer(), 10_000);
+  const child = (
+    componentsGeneric() as unknown as { conflictFreeCounter: typeof internal }
+  ).conflictFreeCounter;
+  for (let i = 0; i < 2; i++) {
+    vi.setSystemTime(Date.now() + POLL_INTERVAL_MS);
+    await t.action(child.maintenance.poll, {});
+    await finish(() => vi.advanceTimersToNextTimer(), 10_000);
+  }
 }
 
 describe("ConflictFreeCounter against a real component", () => {
@@ -67,16 +81,17 @@ describe("ConflictFreeCounter against a real component", () => {
   test("count forwards logScanLimit and defaultLogScanLimit", async () => {
     const t = setup();
     const counter = new ConflictFreeCounter(components.conflictFreeCounter);
-    const snapshotOnly = new ConflictFreeCounter(components.conflictFreeCounter, {
-      defaultLogScanLimit: 0,
-    });
+    const snapshotOnly = new ConflictFreeCounter(
+      components.conflictFreeCounter,
+      {
+        defaultLogScanLimit: 0,
+      },
+    );
     await t.run(async (ctx) => {
       await counter.add(ctx, "k", 5);
     });
     // Uncompacted: full scan sees it, snapshot-only doesn't.
-    expect(
-      (await t.run(async (ctx) => counter.count(ctx, "k"))).count,
-    ).toBe(5);
+    expect((await t.run(async (ctx) => counter.count(ctx, "k"))).count).toBe(5);
     expect(
       (await t.run(async (ctx) => snapshotOnly.count(ctx, "k"))).count,
     ).toBe(0);
@@ -89,11 +104,8 @@ describe("ConflictFreeCounter against a real component", () => {
       ).count,
     ).toBe(5);
     expect(
-      (
-        await t.run(async (ctx) =>
-          counter.count(ctx, "k", { logScanLimit: 0 }),
-        )
-      ).count,
+      (await t.run(async (ctx) => counter.count(ctx, "k", { logScanLimit: 0 })))
+        .count,
     ).toBe(0);
   });
 
@@ -198,9 +210,9 @@ describe("ConflictFreeCounter unit behavior (fake ctx)", () => {
       counter.addMany(ctx, [{ key: "k", delta: Infinity }]),
     ).rejects.toThrow(/finite/);
     const buffered = counter.bindDeltasBuffer(ctx);
-    await expect(
-      counter.addBuffered(buffered, "k", -Infinity),
-    ).rejects.toThrow(/finite/);
+    await expect(counter.addBuffered(buffered, "k", -Infinity)).rejects.toThrow(
+      /finite/,
+    );
     expect(runMutation).not.toHaveBeenCalled();
   });
 
@@ -211,9 +223,7 @@ describe("ConflictFreeCounter unit behavior (fake ctx)", () => {
     await expect(counter.addBuffered(ctx, "k")).rejects.toThrow(
       /bindDeltasBuffer/,
     );
-    await expect(counter.flushDeltas(ctx)).rejects.toThrow(
-      /bindDeltasBuffer/,
-    );
+    await expect(counter.flushDeltas(ctx)).rejects.toThrow(/bindDeltasBuffer/);
   });
 
   test("a failed flush keeps unwritten deltas so a retry writes them", async () => {

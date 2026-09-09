@@ -6,7 +6,7 @@
   "bugs": {
     "url": "https://github.com/stack1ng/convex-conflict-free-counter/issues"
   },
-  "version": "1.0.2",
+  "version": "2.0.0",
   "license": "Apache-2.0",
   "keywords": [
     "convex",
@@ -27,7 +27,7 @@
     "clean": "rm -rf dist *.tsbuildinfo",
     "typecheck": "tsc --noEmit && tsc -p example/convex",
     "lint": "eslint .",
-    "test": "vitest run --typecheck",
+    "test": "vitest run && tsc -p tsconfig.test.json --noEmit",
     "test:watch": "vitest --typecheck --clearScreen false",
     "test:debug": "vitest --inspect-brk --no-file-parallelism",
     "test:coverage": "vitest run --coverage --coverage.reporter=text",
@@ -67,7 +67,8 @@
     }
   },
   "dependencies": {
-    "convex-helpers": "^0.1.104"
+    "convex-helpers": "^0.1.104",
+    "@convex-dev/workpool": "0.4.10"
   },
   "peerDependencies": {
     "convex": "^1.36.1"

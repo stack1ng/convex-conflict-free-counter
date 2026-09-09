@@ -9,6 +9,8 @@
  */
 
 import type * as compaction from "../compaction.js";
+import type * as crons from "../crons.js";
+import type * as maintenance from "../maintenance.js";
 import type * as public_ from "../public.js";
 import type * as shared from "../shared.js";
 
@@ -21,6 +23,8 @@ import { anyApi, componentsGeneric } from "convex/server";
 
 const fullApi: ApiFromModules<{
   compaction: typeof compaction;
+  crons: typeof crons;
+  maintenance: typeof maintenance;
   public: typeof public_;
   shared: typeof shared;
 }> = anyApi as any;
@@ -51,4 +55,6 @@ export const internal: FilterApi<
   FunctionReference<any, "internal">
 > = anyApi as any;
 
-export const components = componentsGeneric() as unknown as {};
+export const components = componentsGeneric() as unknown as {
+  workpool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"workpool">;
+};

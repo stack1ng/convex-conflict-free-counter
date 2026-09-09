@@ -1,5 +1,5 @@
 import type { QueryCtx } from "./_generated/server.js";
-import type { Doc, Id } from "./_generated/dataModel.js";
+import type { Doc } from "./_generated/dataModel.js";
 import type { PaginationOptions, PaginationResult } from "convex/server";
 import schema from "./schema.js";
 import { paginator } from "convex-helpers/server/pagination";
@@ -55,16 +55,30 @@ export async function computeDeltaFromLogs(
 export async function getSnapshot(
   ctx: QueryCtx,
   key: string,
-): Promise<
-  Pick<Doc<"counter_snapshots">, "count"> & {
-    _id?: Id<"counter_snapshots">;
-  }
-> {
-  return (
-    (await ctx.db
-      .query("counter_snapshots")
-      .withIndex("by_key", (q) => q.eq("key", key))
-      .order("desc")
-      .first()) ?? { count: 0 }
-  );
+): Promise<{ count: number }> {
+  const snapshots = await ctx.db
+    .query("counter_snapshots")
+    .withIndex("by_key", (q) => q.eq("key", key))
+    .take(COMPACTION_LANES + 1);
+  const count = snapshots.reduce((sum, snapshot) => sum + snapshot.count, 0);
+  if (!Number.isFinite(count)) throw new Error(`Counter overflow for ${key}`);
+  return { count };
+}
+
+export const COMPACTION_LANES = 16;
+export const COMPACTION_READ_BUDGET = 3000;
+export const MAX_COMPACTION_LOGS = COMPACTION_READ_BUDGET / 2;
+export const POLL_INTERVAL_MS = 5000;
+export const DEFAULT_MAX_PARALLELISM = 4;
+
+// Preserve index prefetching when reading past deleted log entries.
+export async function firstPendingLog(
+  ctx: QueryCtx,
+  lane: number | undefined,
+): Promise<Doc<"counter_logs"> | null> {
+  for await (const log of ctx.db
+    .query("counter_logs")
+    .withIndex("by_lane", (q) => q.eq("lane", lane)))
+    return log;
+  return null;
 }

@@ -3,9 +3,7 @@ import { mutation, query } from "./_generated/server";
 import { components } from "./_generated/api";
 import { ConflictFreeCounter } from "convex-conflict-free-counter";
 
-const counter = new ConflictFreeCounter(components.conflictFreeCounter, {
-  compactionDelay: 1000 * 15,
-});
+const counter = new ConflictFreeCounter(components.conflictFreeCounter);
 
 // Record an event and bump its per-kind counter. Any number of these can
 // commit concurrently without conflicting on the counter.

@@ -16,17 +16,9 @@ export type RunQueryCtx = {
 };
 
 export interface ConflictFreeCounterOptions {
-  /**
-   * How long (in milliseconds) the counter waits after a write before
-   * compacting the log into the snapshot. Longer delays batch more log
-   * entries per compaction; shorter delays converge reads faster.
-   * Default: 15 seconds.
-   */
+  // Deprecated; use configureCompaction.
   compactionDelay?: number;
-  /**
-   * How long (in milliseconds) a compaction lease is valid for. Must
-   * comfortably exceed the time one compaction round takes. Default: 1 minute.
-   */
+  // Deprecated; compaction is managed by the component's Workpool.
   compactionLeaseDuration?: number;
   /**
    * Default cap on how many uncompacted log entries a `count` call reads
@@ -90,6 +82,17 @@ export class ConflictFreeCounter {
     this.options = { ...DEFAULT_OPTIONS, ...options };
   }
 
+  async configureCompaction(
+    ctx: RunMutationCtx,
+    options: { maxParallelism: number; pollIntervalMs: number },
+  ) {
+    await ctx.runMutation(this.component.maintenance.configure, options);
+  }
+
+  async compactionHealth(ctx: RunQueryCtx) {
+    return await ctx.runQuery(this.component.maintenance.health, {});
+  }
+
   /**
    * Increment (or decrement, with a negative delta) the counter for `key`.
    *
@@ -151,7 +154,7 @@ export class ConflictFreeCounter {
    * reflects every `add` committed before this read started). When the
    * uncompacted log is larger than the scan limit, the returned count omits
    * the tail of the log and `fullyConsistent` is `false`; the missing deltas
-   * show up after the next compaction (within roughly `compactionDelay`).
+   * show up after compaction; queue age is available from `compactionHealth`.
    */
   async count(
     ctx: RunQueryCtx,

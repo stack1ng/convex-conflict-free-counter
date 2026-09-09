@@ -1,54 +1,56 @@
-/// <reference types="vite/client" />
-
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { convexTest } from "convex-test";
+import workpoolTest from "@convex-dev/workpool/test";
+import { Workpool, type WorkId } from "@convex-dev/workpool";
 import schema from "./schema.js";
-import { modules } from "./setup.test.js";
-import { api, internal } from "./_generated/api.js";
-import type { Id } from "./_generated/dataModel.js";
-
-const config = {
-  compactionDelay: 15_000,
-  compactionLeaseDuration: 60_000,
-};
+import { modules, enableSnapshotQueries } from "./setup.test.js";
+import { api, components, internal } from "./_generated/api.js";
+import { RESET_BATCH_SIZE } from "./compaction.js";
+import {
+  COMPACTION_READ_BUDGET,
+  MAX_COMPACTION_LOGS,
+  COMPACTION_LANES,
+  POLL_INTERVAL_MS,
+} from "./shared.js";
 
 function setup() {
-  return convexTest(schema, modules);
+  const t = convexTest({ schema, modules, transactionLimits: true });
+  enableSnapshotQueries();
+  workpoolTest.register(t, "workpool");
+  return t;
 }
-
-// Advance timers one at a time so scheduled functions observe a clock
-// consistent with their scheduling order (jumping the whole timeline at once
-// would expire every lease before its chain ran).
-async function drain(t: ReturnType<typeof setup>) {
-  const finish = t.finishAllScheduledFunctions as (
-    advanceTimers: () => void,
-    maxIterations?: number,
-  ) => Promise<void>;
-  await finish(() => vi.advanceTimersToNextTimer(), 10_000);
+async function finish(t: ReturnType<typeof setup>) {
+  await (
+    t.finishAllScheduledFunctions as (
+      advance: () => void,
+      iterations: number,
+    ) => Promise<void>
+  )(() => vi.advanceTimersToNextTimer(), 10000);
 }
-
-async function insertLogs(
+async function poll(t: ReturnType<typeof setup>) {
+  vi.setSystemTime(Date.now() + POLL_INTERVAL_MS);
+  await t.action(internal.maintenance.poll, {});
+  await finish(t);
+}
+async function logs(
   t: ReturnType<typeof setup>,
   key: string,
-  deltas: number[],
+  count: number,
+  legacy = false,
 ) {
-  await t.run(async (ctx) => {
-    for (const delta of deltas) {
-      await ctx.db.insert("counter_logs", { key, delta });
-    }
+  return t.run(async (ctx) => {
+    const ids = [];
+    for (let i = 0; i < count; i++)
+      ids.push(
+        await ctx.db.insert("counter_logs", {
+          key,
+          delta: 1,
+          ...(legacy ? {} : { lane: 0 }),
+        }),
+      );
+    return ids;
   });
 }
-
-async function insertLease(
-  t: ReturnType<typeof setup>,
-  key: string,
-  expiresAt: number,
-): Promise<Id<"compaction_leases">> {
-  return await t.run(async (ctx) =>
-    ctx.db.insert("compaction_leases", { key, expires_at: expiresAt }),
-  );
-}
-
 beforeEach(() => {
   vi.useFakeTimers();
 });
@@ -56,390 +58,471 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("signalNeedCompaction", () => {
-  test("is idempotent while a lease is active", async () => {
+describe("bounded discovery and compaction", () => {
+  test("hot writes schedule nothing and create no maintenance state", async () => {
     const t = setup();
-    await insertLogs(t, "k", [1]);
-    await t.mutation(internal.compaction.signalNeedCompaction, {
-      key: "k",
-      ...config,
+    await t.mutation(api.public.addMany, {
+      deltas: Array.from({ length: 2000 }, (_, i) => ({
+        key: `key${i}`,
+        delta: 1,
+      })),
     });
-    await t.mutation(internal.compaction.signalNeedCompaction, {
-      key: "k",
-      ...config,
-    });
-    const leases = await t.run(async (ctx) =>
-      ctx.db.query("compaction_leases").collect(),
-    );
-    expect(leases).toHaveLength(1);
-  });
-
-  test("reaps expired lease rows before creating a new one", async () => {
-    const t = setup();
-    const now = Date.now();
-    await insertLease(t, "k", now - 10_000);
-    await insertLease(t, "k", now - 5_000);
-    await insertLogs(t, "k", [1]);
-    await t.mutation(internal.compaction.signalNeedCompaction, {
-      key: "k",
-      ...config,
-    });
-    const leases = await t.run(async (ctx) =>
-      ctx.db.query("compaction_leases").collect(),
-    );
-    expect(leases).toHaveLength(1);
-    expect(leases[0].expires_at).toBeGreaterThan(now);
-  });
-});
-
-describe("cursor-boundary batching", () => {
-  test("getCompactLogSet reports the page size up to numItems", async () => {
-    const t = setup();
-    await insertLogs(t, "k", [1, 2, 3, 4, 5]);
-    const boundary = await t.query(internal.compaction.getCompactLogSet, {
-      key: "k",
-      numItems: 2,
-    });
-    expect(boundary.pageSize).toBe(2);
-    expect(boundary.isDone).toBe(false);
-  });
-
-  test("compactLogSet folds exactly the bounded range and continues the chain", async () => {
-    const t = setup();
-    await insertLogs(t, "k", [1, 2, 4, 8, 16]);
-    const lease = await insertLease(t, "k", Date.now() + 60_000);
-    const boundary = await t.query(internal.compaction.getCompactLogSet, {
-      key: "k",
-      numItems: 3,
-    });
-    await t.mutation(internal.compaction.compactLogSet, {
-      key: "k",
-      lease,
-      pageSize: boundary.pageSize,
-      moreLogsExist: !boundary.isDone,
-      ...config,
-    });
-
+    await t.mutation(api.public.add, { key: "key0", delta: 1 });
     await t.run(async (ctx) => {
-      const logs = await ctx.db.query("counter_logs").collect();
-      const snapshots = await ctx.db.query("counter_snapshots").collect();
-      // First three logs (1 + 2 + 4) folded; the rest untouched.
-      expect(snapshots[0]).toMatchObject({ key: "k", count: 7 });
-      expect(logs.map((l) => l.delta).sort((a, b) => a - b)).toEqual([8, 16]);
-      // Chain continues: lease still held (renewed), not deleted.
-      expect(await ctx.db.get("compaction_leases", lease)).not.toBeNull();
+      expect(
+        await ctx.db.system.query("_scheduled_functions").collect(),
+      ).toHaveLength(0);
+      for (const table of [
+        "compaction_leases",
+        "compaction_lanes",
+        "compaction_config",
+      ] as const)
+        expect(await ctx.db.query(table).collect()).toHaveLength(0);
     });
-
-    // Drain the scheduled continuation: everything compacts, lease released.
-    await drain(t);
-    expect(await t.query(api.public.read, { key: "k" })).toEqual({
-      count: 31,
-      fullyConsistent: true,
-    });
-    const leases = await t.run(async (ctx) =>
-      ctx.db.query("compaction_leases").collect(),
+  });
+  test("repeated discovery enqueues at most one job per lane", async () => {
+    const t = setup();
+    await logs(t, "hot", 2000);
+    await t.action(internal.maintenance.poll, {});
+    const before = await t.run((ctx) =>
+      ctx.db.query("compaction_lanes").collect(),
     );
-    expect(leases).toHaveLength(0);
-  });
-
-  test("writes committed after the boundary are not folded by that batch", async () => {
-    const t = setup();
-    await insertLogs(t, "k", [1, 2]);
-    const lease = await insertLease(t, "k", Date.now() + 60_000);
-    const boundary = await t.query(internal.compaction.getCompactLogSet, {
-      key: "k",
-      numItems: 10,
-    });
-    // A "concurrent" append lands after the boundary was taken.
-    await insertLogs(t, "k", [100]);
-    await t.mutation(internal.compaction.compactLogSet, {
-      key: "k",
-      lease,
-      pageSize: boundary.pageSize,
-      moreLogsExist: !boundary.isDone,
-      ...config,
-    });
-
-    await t.run(async (ctx) => {
-      const snapshots = await ctx.db.query("counter_snapshots").collect();
-      const logs = await ctx.db.query("counter_logs").collect();
-      expect(snapshots[0]).toMatchObject({ key: "k", count: 3 });
-      // The straggler survives as a log (the end-of-chain recheck would
-      // compact it later).
-      expect(logs.map((l) => l.delta)).toEqual([100]);
-    });
-    // Reads still see the full total.
-    expect((await t.query(api.public.read, { key: "k" })).count).toBe(103);
-  });
-});
-
-describe("lease fencing", () => {
-  test("compactLogSet whose lease row was reaped throws and leaves logs untouched", async () => {
-    const t = setup();
-    await insertLogs(t, "k", [1, 2, 3]);
-    const lease = await insertLease(t, "k", Date.now() + 60_000);
-    const boundary = await t.query(internal.compaction.getCompactLogSet, {
-      key: "k",
-      numItems: 10,
-    });
-    // A takeover (signal reap or watchdog) deletes the row, fencing out the
-    // old chain before it touches any logs.
-    await t.run(async (ctx) => ctx.db.delete("compaction_leases", lease));
-    await expect(
-      t.mutation(internal.compaction.compactLogSet, {
-        key: "k",
-        lease,
-        pageSize: boundary.pageSize,
-        moreLogsExist: !boundary.isDone,
-        ...config,
-      }),
-    ).rejects.toThrow(/no longer valid/);
-    await t.run(async (ctx) => {
-      expect(await ctx.db.query("counter_logs").collect()).toHaveLength(3);
-      expect(await ctx.db.query("counter_snapshots").collect()).toHaveLength(0);
-    });
-  });
-
-  test("an expired-but-unreaped lease still owns the key: the chain completes", async () => {
-    const t = setup();
-    await insertLogs(t, "k", [5, 6]);
-    // Ownership is the row's existence; expiry only permits takeover.
-    const lease = await insertLease(t, "k", Date.now() - 1_000);
-    const boundary = await t.query(internal.compaction.getCompactLogSet, {
-      key: "k",
-      numItems: 10,
-    });
-    await t.mutation(internal.compaction.compactLogSet, {
-      key: "k",
-      lease,
-      pageSize: boundary.pageSize,
-      moreLogsExist: !boundary.isDone,
-      ...config,
-    });
-    await drain(t);
-    expect(await t.query(api.public.read, { key: "k" })).toEqual({
-      count: 11,
-      fullyConsistent: true,
-    });
-  });
-
-  test("a signal reaps an expired lease, fencing out its chain", async () => {
-    const t = setup();
-    await insertLogs(t, "k", [7]);
-    const expired = await insertLease(t, "k", Date.now() - 1_000);
-    await t.mutation(internal.compaction.signalNeedCompaction, {
-      key: "k",
-      ...config,
-    });
-    await t.run(async (ctx) => {
-      // The expired lease is gone, replaced by the new chain's lease.
-      expect(await ctx.db.get("compaction_leases", expired)).toBeNull();
-      const leases = await ctx.db.query("compaction_leases").collect();
-      expect(leases).toHaveLength(1);
-      expect(leases[0].expires_at).toBeGreaterThan(Date.now());
-    });
-  });
-});
-
-describe("watchdog", () => {
-  test("no-ops when the lease row is already gone", async () => {
-    const t = setup();
-    const lease = await insertLease(t, "k", Date.now() + 60_000);
-    await t.run(async (ctx) => ctx.db.delete("compaction_leases", lease));
-    await t.mutation(internal.compaction.watchdogLease, {
-      key: "k",
-      lease,
-      ...config,
-    });
-    const scheduled = await t.run(async (ctx) =>
-      ctx.db.system.query("_scheduled_functions").collect(),
-    );
-    expect(scheduled.filter((f) => f.state.kind === "pending")).toHaveLength(0);
-  });
-
-  test("re-watches while the lease is still active", async () => {
-    const t = setup();
-    const lease = await insertLease(t, "k", Date.now() + 30_000);
-    await t.mutation(internal.compaction.watchdogLease, {
-      key: "k",
-      lease,
-      ...config,
-    });
-    const scheduled = await t.run(async (ctx) =>
-      ctx.db.system.query("_scheduled_functions").collect(),
-    );
-    const pending = scheduled.filter((f) => f.state.kind === "pending");
-    expect(pending).toHaveLength(1);
-    expect(pending[0].name).toContain("watchdogLease");
-    // The lease is untouched.
-    const row = await t.run(async (ctx) =>
-      ctx.db.get("compaction_leases", lease),
-    );
-    expect(row).not.toBeNull();
-    // Let the re-scheduled watchdog run to completion so nothing leaks.
-    await t.run(async (ctx) => ctx.db.delete("compaction_leases", lease));
-    await drain(t);
-  });
-
-  test("does not steal an expired lease while its chain's job is still pending", async () => {
-    const t = setup();
-    await insertLogs(t, "k", [1]);
-    // Start a real chain so the lease records its scheduled compactLogs job.
-    await t.mutation(internal.compaction.signalNeedCompaction, {
-      key: "k",
-      ...config,
-    });
-    const lease = await t.run(async (ctx) => {
-      const rows = await ctx.db.query("compaction_leases").collect();
-      // Simulate the lease expiring while the scheduled job hasn't run yet
-      // (e.g. severe scheduler backlog).
-      await ctx.db.patch("compaction_leases", rows[0]._id, {
-        expires_at: Date.now() - 1,
+    for (let i = 0; i < 20; i++) {
+      await t.action(internal.maintenance.poll, {});
+      await t.mutation(internal.maintenance.enqueueLanes, {
+        lanes: [0],
       });
-      return rows[0]._id;
-    });
-    await t.mutation(internal.compaction.watchdogLease, {
-      key: "k",
-      lease,
-      ...config,
-    });
-    // The lease was NOT stolen; a re-watch was scheduled instead.
-    await t.run(async (ctx) => {
-      expect(await ctx.db.get("compaction_leases", lease)).not.toBeNull();
-      const pending = (
-        await ctx.db.system.query("_scheduled_functions").collect()
-      ).filter((f) => f.state.kind === "pending");
-      expect(pending.some((f) => f.name.includes("watchdogLease"))).toBe(true);
-    });
-    // Draining lets the slow chain finish normally.
-    await drain(t);
-    expect(await t.query(api.public.read, { key: "k" })).toEqual({
-      count: 1,
-      fullyConsistent: true,
+    }
+    expect(
+      await t.run((ctx) => ctx.db.query("compaction_lanes").collect()),
+    ).toEqual(before);
+    await finish(t);
+    expect(
+      await t.query(api.public.read, { key: "hot", logScanLimit: 0 }),
+    ).toMatchObject({ count: 2000 });
+    expect(await t.query(api.maintenance.health, {})).toMatchObject({
+      oldestPendingDeltaAt: null,
+      outstandingLanes: 0,
+      failedLanes: 0,
     });
   });
-
-  test("recovers a dead chain: reaps the expired lease and compacts the backlog", async () => {
+  test("large backlogs continue without another poll", async () => {
     const t = setup();
-    // Simulate a chain that died: logs exist, the lease expired in place
-    // with no live scheduled job (no `job` recorded).
-    await insertLogs(t, "k", [3, 4]);
-    const lease = await insertLease(t, "k", Date.now() - 1);
-    await t.mutation(internal.compaction.watchdogLease, {
-      key: "k",
-      lease,
-      ...config,
+    await logs(t, "hot", MAX_COMPACTION_LOGS * 4 + 7);
+    await poll(t);
+    expect(
+      await t.query(api.public.read, { key: "hot", logScanLimit: 0 }),
+    ).toMatchObject({ count: MAX_COMPACTION_LOGS * 4 + 7 });
+    expect(
+      (await t.query(api.maintenance.health, {})).oldestPendingDeltaAt,
+    ).toBeNull();
+  }, 30000);
+  test("many keys share the fixed lane set and all reach snapshots", async () => {
+    const t = setup();
+    await t.mutation(api.public.addMany, {
+      deltas: Array.from({ length: 1200 }, (_, i) => ({
+        key: `key${i}`,
+        delta: i - 600,
+      })),
     });
-    await drain(t);
-
-    expect(await t.query(api.public.read, { key: "k" })).toEqual({
-      count: 7,
-      fullyConsistent: true,
-    });
+    await poll(t);
     await t.run(async (ctx) => {
       expect(await ctx.db.query("counter_logs").collect()).toHaveLength(0);
-      expect(await ctx.db.query("compaction_leases").collect()).toHaveLength(0);
-      expect(await ctx.db.query("counter_snapshots").collect()).toHaveLength(1);
-    });
-  });
-
-  test("end-to-end: every add leaves a watchdog that terminates cleanly", async () => {
-    const t = setup();
-    await t.mutation(api.public.add, { key: "k", delta: 1 });
-    // Before draining, both the compaction and its watchdog are scheduled.
-    const scheduled = await t.run(async (ctx) =>
-      ctx.db.system.query("_scheduled_functions").collect(),
-    );
-    expect(
-      scheduled.some((f) => f.name.includes("signalNeedCompaction")),
-    ).toBe(true);
-    await drain(t);
-    // After draining, nothing is pending and no lease remains.
-    const after = await t.run(async (ctx) => ({
-      pending: (await ctx.db.system.query("_scheduled_functions").collect())
-        .filter((f) => f.state.kind === "pending"),
-      leases: await ctx.db.query("compaction_leases").collect(),
-    }));
-    expect(after.pending).toHaveLength(0);
-    expect(after.leases).toHaveLength(0);
-  });
-});
-
-describe("signal fan-out", () => {
-  test("signalNeedCompactionMany chunks batches over the fan-out size", async () => {
-    const t = setup();
-    // SIGNAL_FANOUT_BATCH_SIZE is 400; 403 keys force one reschedule.
-    const keys = Array.from({ length: 403 }, (_, i) => `k${i}`);
-    await t.mutation(internal.compaction.signalNeedCompactionMany, {
-      keys,
-      ...config,
-    });
-
-    await t.run(async (ctx) => {
-      // First 400 keys got leases; the remaining 3 ride a rescheduled call.
-      const leases = await ctx.db.query("compaction_leases").collect();
-      expect(leases).toHaveLength(400);
-      const pending = (
-        await ctx.db.system.query("_scheduled_functions").collect()
-      ).filter((f) => f.state.kind === "pending");
-      const fanOut = pending.filter((f) =>
-        f.name.includes("signalNeedCompactionMany"),
+      expect(await ctx.db.query("counter_snapshots").collect()).toHaveLength(
+        1200,
       );
-      expect(fanOut).toHaveLength(1);
-      expect((fanOut[0].args[0] as { keys: string[] }).keys).toHaveLength(3);
+      expect(
+        (await ctx.db.query("compaction_lanes").collect()).length,
+      ).toBeLessThanOrEqual(COMPACTION_LANES);
     });
-  });
-
-  test("addMany end-to-end compacts every key through the fan-out", async () => {
+  }, 30000);
+  test("selection is bounded by bytes as well as rows", async () => {
     const t = setup();
-    const keys = Array.from({ length: 12 }, (_, i) => `k${i}`);
-    await t.mutation(api.public.addMany, {
-      deltas: keys.map((key, i) => ({ key, delta: i })),
-    });
-    await drain(t);
-
-    const snapshots = await t.run(async (ctx) =>
-      ctx.db.query("counter_snapshots").collect(),
+    const key = "large".repeat(20000);
+    await logs(t, key, 30);
+    const lane = await t.run((ctx) =>
+      ctx.db.insert("compaction_lanes", {
+        lane: 0,
+        failures: 0,
+        retryAt: 0,
+      }),
     );
-    // Key k0 has delta 0 — compaction still folds it (snapshot count 0).
-    expect(snapshots).toHaveLength(12);
-    const logs = await t.run(async (ctx) =>
-      ctx.db.query("counter_logs").collect(),
-    );
-    expect(logs).toHaveLength(0);
-  }, 60_000);
-});
-
-describe("releaseLeaseAndRecheck", () => {
-  test("tolerates an already-deleted lease", async () => {
-    const t = setup();
-    const lease = await insertLease(t, "k", Date.now() + 60_000);
-    await t.run(async (ctx) => ctx.db.delete("compaction_leases", lease));
-    // Should not throw.
-    await t.mutation(internal.compaction.releaseLeaseAndRecheck, {
-      key: "k",
-      lease,
-      ...config,
-    });
+    const selected = await t.query(internal.maintenance.selectBatch, { lane });
+    expect(selected.ids.length).toBeGreaterThan(0);
+    expect(selected.ids.length).toBeLessThan(30);
+    expect(selected.more).toBe(true);
+    await poll(t);
+    expect(
+      (await t.query(api.public.read, { key, logScanLimit: 0 })).count,
+    ).toBe(30);
   });
-
-  test("re-signals when logs remain", async () => {
+  test("partial reads and health expose stale data", async () => {
     const t = setup();
-    await insertLogs(t, "k", [2]);
-    const lease = await insertLease(t, "k", Date.now() + 60_000);
-    await t.mutation(internal.compaction.releaseLeaseAndRecheck, {
-      key: "k",
-      lease,
-      ...config,
-    });
-    await drain(t);
-    expect(await t.query(api.public.read, { key: "k" })).toEqual({
-      count: 2,
+    await logs(t, "hot", 20);
+    expect(
+      await t.query(api.public.read, { key: "hot", logScanLimit: 5 }),
+    ).toEqual({ count: 5, fullyConsistent: false });
+    expect(
+      (await t.query(api.maintenance.health, {})).oldestPendingDeltaAt,
+    ).not.toBeNull();
+    await poll(t);
+    expect(await t.query(api.public.read, { key: "hot" })).toEqual({
+      count: 20,
       fullyConsistent: true,
     });
-    const logs = await t.run(async (ctx) =>
+  });
+});
+
+describe("idempotency and reset fencing", () => {
+  test("replayed IDs cannot double-count or consume later writes", async () => {
+    const t = setup();
+    const ids = await logs(t, "hot", 3);
+    await t.mutation(api.public.add, { key: "hot", delta: 100 });
+    expect(
+      await t.mutation(internal.maintenance.applyBatch, {
+        ids: [...ids, ids[0]],
+      }),
+    ).toBe(3);
+    expect(await t.mutation(internal.maintenance.applyBatch, { ids })).toBe(0);
+    expect(await t.query(api.public.read, { key: "hot" })).toEqual({
+      count: 103,
+      fullyConsistent: true,
+    });
+    await poll(t);
+    expect(
+      (await t.query(api.public.read, { key: "hot", logScanLimit: 0 })).count,
+    ).toBe(103);
+  });
+  test("reset after selection cannot resurrect old deltas", async () => {
+    const t = setup();
+    const ids = await logs(t, "hot", 20);
+    await t.mutation(api.public.reset, { key: "hot" });
+    await t.mutation(api.public.add, { key: "hot", delta: 7 });
+    await t.mutation(internal.maintenance.applyBatch, { ids });
+    await poll(t);
+    expect((await t.query(api.public.read, { key: "hot" })).count).toBe(7);
+  });
+  test("a pending reset still fences compaction after its old deadline", async () => {
+    const t = setup();
+    await logs(t, "hot", RESET_BATCH_SIZE + 100);
+    await t.mutation(api.public.reset, { key: "hot" });
+    const remaining = await t.run((ctx) =>
       ctx.db.query("counter_logs").collect(),
     );
-    expect(logs).toHaveLength(0);
+    vi.setSystemTime(Date.now() + 120000);
+    expect(
+      await t.mutation(internal.maintenance.applyBatch, {
+        ids: remaining.map((log) => log._id),
+      }),
+    ).toBe(0);
+    await t.mutation(api.public.add, { key: "hot", delta: 9 });
+    await finish(t);
+    await poll(t);
+    expect((await t.query(api.public.read, { key: "hot" })).count).toBe(9);
+  }, 30000);
+  test("a second reset fences the first clear continuation", async () => {
+    const t = setup();
+    await logs(t, "hot", 8100);
+    await t.mutation(api.public.reset, { key: "hot" });
+    await t.mutation(api.public.reset, { key: "hot" });
+    await t.mutation(api.public.add, { key: "hot", delta: 11 });
+    await finish(t);
+    await poll(t);
+    expect((await t.query(api.public.read, { key: "hot" })).count).toBe(11);
+  }, 30000);
+});
+
+describe("recovery and upgrade", () => {
+  test("jobs starting minutes late still compact their data", async () => {
+    const t = setup();
+    await logs(t, "hot", 1200);
+    await t.action(internal.maintenance.poll, {});
+    vi.setSystemTime(Date.now() + 10 * 60000);
+    await finish(t);
+    expect(
+      (await t.query(api.public.read, { key: "hot", logScanLimit: 0 })).count,
+    ).toBe(1200);
+    expect((await t.query(api.maintenance.health, {})).outstandingLanes).toBe(
+      0,
+    );
+  }, 30000);
+  test("canceled work is rediscovered without a new write", async () => {
+    const t = setup();
+    await logs(t, "hot", 10);
+    await t.action(internal.maintenance.poll, {});
+    const lane = await t.run((ctx) => ctx.db.query("compaction_lanes").first());
+    await t.run((ctx) =>
+      new Workpool(components.workpool, {}).cancel(ctx, lane!.workId as WorkId),
+    );
+    await finish(t);
+    vi.setSystemTime(Date.now() + 60000);
+    await poll(t);
+    expect(
+      (await t.query(api.public.read, { key: "hot", logScanLimit: 0 })).count,
+    ).toBe(10);
   });
+  test("overflow is visible and recovers after reset without poisoning snapshots", async () => {
+    const t = setup();
+    await t.run(async (ctx) => {
+      await ctx.db.insert("counter_logs", {
+        key: "hot",
+        delta: 1e308,
+        lane: 0,
+      });
+      await ctx.db.insert("counter_logs", {
+        key: "hot",
+        delta: 1e308,
+        lane: 0,
+      });
+    });
+    await poll(t);
+    expect((await t.query(api.maintenance.health, {})).failedLanes).toBe(1);
+    expect(
+      await t.run((ctx) => ctx.db.query("counter_snapshots").collect()),
+    ).toHaveLength(0);
+    await t.mutation(api.public.reset, { key: "hot" });
+    await t.mutation(api.public.add, { key: "hot", delta: 1 });
+    vi.setSystemTime(Date.now() + 60000);
+    await poll(t);
+    expect((await t.query(api.public.read, { key: "hot" })).count).toBe(1);
+    expect((await t.query(api.maintenance.health, {})).failedLanes).toBe(0);
+  });
+  test("legacy logs join the same snapshot lane as new writes before compaction", async () => {
+    const t = setup();
+    const oldIds = await logs(t, "hot", 3, true);
+    await logs(t, "hot", 2);
+    expect(
+      await t.mutation(internal.maintenance.applyBatch, { ids: oldIds }),
+    ).toBe(3);
+    expect(
+      await t.run((ctx) => ctx.db.query("counter_snapshots").collect()),
+    ).toHaveLength(0);
+    await poll(t);
+    expect(
+      (await t.query(api.public.read, { key: "hot", logScanLimit: 0 })).count,
+    ).toBe(5);
+  });
+  test("a legacy reset without a job link survives upgrade", async () => {
+    const t = setup();
+    await logs(t, "hot", 3, true);
+    await t.run(async (ctx) => {
+      const lease = await ctx.db.insert("compaction_leases", {
+        key: "hot",
+        expires_at: Date.now() - 1,
+      });
+      await ctx.scheduler.runAfter(0, internal.compaction.clearKeyBatch, {
+        key: "hot",
+        lease,
+        boundaryCreationTime: (await ctx.db
+          .query("counter_logs")
+          .order("desc")
+          .first())!._creationTime,
+        compactionDelay: 15000,
+        compactionLeaseDuration: 60000,
+      });
+    });
+    vi.setSystemTime(Date.now() + 1);
+    await t.mutation(api.public.add, { key: "hot", delta: 7 });
+    await poll(t);
+    await poll(t);
+    expect((await t.query(api.public.read, { key: "hot" })).count).toBe(7);
+  });
+  test("legacy jobs stop rescheduling and their leases are cleaned", async () => {
+    const t = setup();
+    await logs(t, "hot", 3, true);
+    await t.run(async (ctx) => {
+      const lease = await ctx.db.insert("compaction_leases", {
+        key: "hot",
+        expires_at: Date.now() + 60000,
+      });
+      const job = await ctx.scheduler.runAfter(
+        0,
+        internal.compaction.compactLogs,
+        {
+          key: "hot",
+          lease,
+          compactionDelay: 15000,
+          compactionLeaseDuration: 60000,
+        },
+      );
+      await ctx.db.patch("compaction_leases", lease, { job });
+    });
+    await poll(t);
+    await poll(t);
+    expect(
+      (await t.query(api.public.read, { key: "hot", logScanLimit: 0 })).count,
+    ).toBe(3);
+    expect(
+      await t.run((ctx) => ctx.db.query("compaction_leases").collect()),
+    ).toHaveLength(0);
+  });
+  test("canceled reset cleanup recovers using its original boundary", async () => {
+    const t = setup();
+    await logs(t, "hot", RESET_BATCH_SIZE + 100);
+    await t.mutation(api.public.reset, { key: "hot" });
+    await t.run(async (ctx) => {
+      const lease = await ctx.db.query("compaction_leases").first();
+      await ctx.scheduler.cancel(lease!.job!);
+    });
+    vi.setSystemTime(Date.now() + 1);
+    await t.mutation(api.public.add, { key: "hot", delta: 9 });
+    await poll(t);
+    await poll(t);
+    expect((await t.query(api.public.read, { key: "hot" })).count).toBe(9);
+  }, 30000);
+  test("ordinary legacy leases do not block compaction while cleanup catches up", async () => {
+    const t = setup();
+    const ids = await logs(t, "hot", 3);
+    await t.run(async (ctx) => {
+      const lease = await ctx.db.insert("compaction_leases", {
+        key: "hot",
+        expires_at: Date.now() + 60000,
+      });
+      const job = await ctx.scheduler.runAfter(
+        60000,
+        internal.compaction.compactLogs,
+        {
+          key: "hot",
+          lease,
+          compactionDelay: 15000,
+          compactionLeaseDuration: 60000,
+        },
+      );
+      await ctx.db.patch("compaction_leases", lease, { job });
+    });
+    expect(await t.mutation(internal.maintenance.applyBatch, { ids })).toBe(3);
+    expect(
+      (await t.query(api.public.read, { key: "hot", logScanLimit: 0 })).count,
+    ).toBe(3);
+  });
+});
+
+describe("configuration", () => {
+  test("settings are component-wide and writes cannot change them", async () => {
+    const t = setup();
+    await t.mutation(api.maintenance.configure, {
+      maxParallelism: 2,
+      pollIntervalMs: 10000,
+    });
+    await t.mutation(api.public.add, {
+      key: "hot",
+      delta: 1,
+      compactionDelay: 1,
+    });
+    await poll(t);
+    expect(await t.query(api.maintenance.health, {})).toMatchObject({
+      maxParallelism: 2,
+      pollIntervalMs: 10000,
+    });
+  });
+  test.each([0, -1, 1.5, COMPACTION_LANES + 1, Infinity, NaN])(
+    "rejects parallelism %s",
+    async (maxParallelism) => {
+      const t = setup();
+      await expect(
+        t.mutation(api.maintenance.configure, {
+          maxParallelism,
+          pollIntervalMs: 5000,
+        }),
+      ).rejects.toThrow(/maxParallelism/);
+    },
+  );
+  test.each([0, -1, 4999, 5000.5, Infinity, NaN])(
+    "rejects poll interval %s",
+    async (pollIntervalMs) => {
+      const t = setup();
+      await expect(
+        t.mutation(api.maintenance.configure, {
+          maxParallelism: 4,
+          pollIntervalMs,
+        }),
+      ).rejects.toThrow(/pollIntervalMs/);
+    },
+  );
+});
+
+describe("snapshot lanes", () => {
+  test("a hot key compacts across every lane without conflicting snapshots", async () => {
+    const t = setup();
+    await t.run(async (ctx) => {
+      for (let lane = 0; lane < COMPACTION_LANES; lane++) {
+        for (let i = 0; i < 20; i++)
+          await ctx.db.insert("counter_logs", { key: "hot", delta: 1, lane });
+      }
+    });
+    await poll(t);
+    const snapshots = await t.run((ctx) =>
+      ctx.db.query("counter_snapshots").collect(),
+    );
+    expect(snapshots).toHaveLength(COMPACTION_LANES);
+    expect(new Set(snapshots.map((row) => row.lane)).size).toBe(
+      COMPACTION_LANES,
+    );
+    expect((await t.query(api.public.read, { key: "hot" })).count).toBe(
+      COMPACTION_LANES * 20,
+    );
+  });
+  test("legacy snapshots are summed with new lanes and reset removes both", async () => {
+    const t = setup();
+    await t.run(async (ctx) => {
+      await ctx.db.insert("counter_snapshots", { key: "hot", count: 100 });
+      for (let lane = 0; lane < COMPACTION_LANES; lane++)
+        await ctx.db.insert("counter_logs", {
+          key: "hot",
+          delta: lane + 1,
+          lane,
+        });
+    });
+    await poll(t);
+    expect(
+      (await t.query(api.public.read, { key: "hot", logScanLimit: 0 })).count,
+    ).toBe(100 + (COMPACTION_LANES * (COMPACTION_LANES + 1)) / 2);
+    await t.mutation(api.public.reset, { key: "hot" });
+    expect(
+      await t.run((ctx) => ctx.db.query("counter_snapshots").collect()),
+    ).toHaveLength(0);
+    expect((await t.query(api.public.read, { key: "hot" })).count).toBe(0);
+  });
+  test("overflow across lanes fails the read instead of reporting a non-finite count", async () => {
+    const t = setup();
+    await t.run(async (ctx) => {
+      await ctx.db.insert("counter_snapshots", {
+        key: "hot",
+        count: 1e308,
+        lane: 0,
+      });
+      await ctx.db.insert("counter_snapshots", {
+        key: "hot",
+        count: 1e308,
+        lane: 1,
+      });
+    });
+    await expect(
+      t.query(api.public.read, { key: "hot", logScanLimit: 0 }),
+    ).rejects.toThrow(/overflow/);
+  });
+  test("batch selection includes the per-key read cost", async () => {
+    const t = setup();
+    const lane = await t.run(async (ctx) => {
+      for (let i = 0; i < 2000; i++)
+        await ctx.db.insert("counter_logs", {
+          key: `key${i}`,
+          delta: 1,
+          lane: 0,
+        });
+      return ctx.db.insert("compaction_lanes", {
+        lane: 0,
+        failures: 0,
+        retryAt: 0,
+      });
+    });
+    const selected = await t.query(internal.maintenance.selectBatch, { lane });
+    expect(selected.ids.length * 6).toBeLessThanOrEqual(COMPACTION_READ_BUDGET);
+    expect(selected.more).toBe(true);
+    await t.mutation(internal.maintenance.applyBatch, { ids: selected.ids });
+    await poll(t);
+    expect(
+      (await t.query(api.maintenance.health, {})).oldestPendingDeltaAt,
+    ).toBeNull();
+  }, 30000);
 });

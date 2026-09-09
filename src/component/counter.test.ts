@@ -4,23 +4,29 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { convexTest } from "convex-test";
 import { test as fcTest, fc } from "@fast-check/vitest";
 import schema from "./schema.js";
-import { modules } from "./setup.test.js";
-import { api } from "./_generated/api.js";
+import { modules, enableSnapshotQueries } from "./setup.test.js";
+import workpool from "@convex-dev/workpool/test";
+import { api, internal } from "./_generated/api.js";
+import { POLL_INTERVAL_MS } from "./shared.js";
 
 function setup() {
-  return convexTest(schema, modules);
+  const t = convexTest(schema, modules);
+  enableSnapshotQueries();
+  workpool.register(t, "workpool");
+  return t;
 }
 
-// Drives all pending scheduled work (compaction chains, watchdogs) to
-// completion under fake timers. Timers advance one at a time so scheduled
-// functions observe a clock consistent with their scheduling order (jumping
-// the whole timeline at once would expire every lease before its chain ran).
+// Unit tests must invoke discovery because component crons do not run.
 async function drain(t: ReturnType<typeof setup>) {
   const finish = t.finishAllScheduledFunctions as (
     advanceTimers: () => void,
     maxIterations?: number,
   ) => Promise<void>;
-  await finish(() => vi.advanceTimersToNextTimer(), 10_000);
+  for (let i = 0; i < 2; i++) {
+    vi.setSystemTime(Date.now() + POLL_INTERVAL_MS);
+    await t.action(internal.maintenance.poll, {});
+    await finish(() => vi.advanceTimersToNextTimer(), 10_000);
+  }
 }
 
 // Fake timers everywhere: scheduled compaction work only ever runs inside
@@ -144,7 +150,9 @@ describe("addMany", () => {
   test("empty batch is a no-op", async () => {
     const t = setup();
     await t.mutation(api.public.addMany, { deltas: [] });
-    const logs = await t.run(async (ctx) => ctx.db.query("counter_logs").collect());
+    const logs = await t.run(async (ctx) =>
+      ctx.db.query("counter_logs").collect(),
+    );
     expect(logs).toHaveLength(0);
   });
 
@@ -175,8 +183,8 @@ describe("compaction", () => {
       const snapshots = await ctx.db.query("counter_snapshots").collect();
       const leases = await ctx.db.query("compaction_leases").collect();
       expect(logs).toHaveLength(0);
-      expect(snapshots).toHaveLength(1);
-      expect(snapshots[0]).toMatchObject({ key: "k", count: 42 });
+      expect(snapshots.reduce((sum, row) => sum + row.count, 0)).toBe(42);
+      expect(snapshots.every((row) => row.key === "k")).toBe(true);
       expect(leases).toHaveLength(0);
     });
     expect(await t.query(api.public.read, { key: "k" })).toEqual({
@@ -219,8 +227,8 @@ describe("compaction", () => {
     const snapshots = await t.run(async (ctx) =>
       ctx.db.query("counter_snapshots").collect(),
     );
-    expect(snapshots).toHaveLength(1);
-    expect(snapshots[0]).toMatchObject({ key: "k", count: 3 });
+    expect(snapshots.reduce((sum, row) => sum + row.count, 0)).toBe(3);
+    expect(snapshots.every((row) => row.key === "k")).toBe(true);
   });
 
   test("a signal without any logs terminates without leaving state behind", async () => {
@@ -268,7 +276,6 @@ describe("reset", () => {
 
   test("multi-batch reset deletes only pre-reset logs; later adds survive", async () => {
     const t = setup();
-    // More logs than one clear batch (COMPACTION_BATCH_SIZE = 4,000).
     await t.run(async (ctx) => {
       for (let i = 0; i < 4_050; i++) {
         await ctx.db.insert("counter_logs", { key: "k", delta: 1 });
@@ -296,9 +303,7 @@ describe("randomized model check", () => {
       ops: fc.array(
         fc.record({
           key: fc.constantFrom("a", "b", "c"),
-          delta: fc
-            .integer({ min: -10_000, max: 10_000 })
-            .map((i) => i / 100),
+          delta: fc.integer({ min: -10_000, max: 10_000 }).map((i) => i / 100),
           compact: fc.boolean(),
         }),
         { maxLength: 40 },

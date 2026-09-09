@@ -23,6 +23,28 @@ import type { FunctionReference } from "convex/server";
  */
 export type ComponentApi<Name extends string | undefined = string | undefined> =
   {
+    maintenance: {
+      configure: FunctionReference<
+        "mutation",
+        "internal",
+        { maxParallelism: number; pollIntervalMs: number },
+        null,
+        Name
+      >;
+      health: FunctionReference<
+        "query",
+        "internal",
+        {},
+        {
+          failedLanes: number;
+          maxParallelism: number;
+          oldestPendingDeltaAt: number | null;
+          outstandingLanes: number;
+          pollIntervalMs: number;
+        },
+        Name
+      >;
+    };
     public: {
       add: FunctionReference<
         "mutation",
